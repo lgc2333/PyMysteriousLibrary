@@ -3,31 +3,27 @@
 
 PyNCM_Async 包装的网易云音乐 API 的使用非常简单::
 
-    >>> from pyncm_async import apis
-    # 登录
-    >>> await apis.LoginViaCellphone(phone="[..]", password="[..]", ctcode=86, remeberLogin=True))
-    # 获取歌曲信息
-    >>> await apis.track.GetTrackAudio(29732235)
-    {'data': [{'id': 29732235, 'url': 'http://m701.music...
-    # 获取歌曲详情
-    >>> await apis.track.GetTrackDetail(29732235)
-    {'songs': [{'name': 'Supernova', 'id': 2...
-    # 获取歌曲评论
-    >>> await apis.track.GetTrackComments(29732235)
-    {'isMusician': False, 'userId': -1, 'topComments': [], 'moreHot': True, 'hotComments': [{'user': {'locationInfo': None, 'liveIn ...
+    >>> import asyncio
+    >>> import pyncm_async
+    >>> async def main():
+    >>>     session = pyncm_async.Session()
+    >>>     # 获取歌曲信息
+    >>>     await pyncm_async.apis.track.GetTrackAudio(29732235, session=session)
+    >>>     # 获取歌曲详情
+    >>>     await pyncm_async.apis.track.GetTrackDetail(29732235, session=session)
+    >>>     # 获取歌曲评论
+    >>>     await pyncm_async.apis.track.GetTrackComments(29732235, session=session)
+    >>> asyncio.run(main())
 
-PyNCM_Async 的所有 API 请求都将经过单例的 `pyncm_asycn.Session` 发出，管理此单例可以使用::
+PyNCM_Async 的所有 API 请求都将经过传入的 `pyncm_asycn.Session` 发出，调用时必须显式传入 `session` 参数:
 
-    >>> session = pyncm_asycn.GetCurrentSession()
-    >>> pyncm_asycn.SetCurrentSession(session)
-    >>> pyncm_asycn.SetNewSession()
+    >>> session = Session()
+    >>> await pyncm_async.apis.track.GetTrackComments(29732235, session=session)
 
-PyNCM_Async 同时提供了相应的 Session 序列化函数，用于其储存及管理::
+PyNCM_Async 提供了相应的 Session 序列化函数，用于其储存及管理::
 
-    >>> save = pyncm_asycn.DumpSessionAsString()
-    >>> pyncm_asycn.SetNewSession(
-            pyncm_asycn.LoadSessionFromString(save)
-        )
+    >>> session_str = pyncm_asycn.DumpSessionAsString(session)
+    >>> new_session = pyncm_asycn.LoadSessionFromString(session_str)
 
 # 注意事项
     - (PR#11) 海外用户可能经历 460 "Cheating" 问题，可通过添加以下 Header 解决: `X-Real-IP = 118.88.88.88`
@@ -39,7 +35,6 @@ __VERSION_PATCH__ = 2
 
 __version__ = f"{__VERSION_MAJOR__}.{__VERSION_MINOR__}.{__VERSION_PATCH__}"
 
-from asyncio import get_running_loop
 from typing import Text, Union
 from time import time
 
@@ -56,40 +51,26 @@ if "PYNCM_ASYNC_DEBUG" in os.environ:
         level=debug_level, format="[%(levelname).4s] %(name)s %(message)s"
     )
 
-DEVICE_ID_DEFAULT = "pyncm!"
+# 默认 deviceID
 # This sometimes fails with some strings, for no particular reason. Though `pyncm!` seem to work everytime..?
 # Though with this, all pyncm users would then be sharing the same device Id.
 # Don't think that would be of any issue though...
-"""默认 deviceID"""
-SESSION_STACK = dict()
+DEVICE_ID_DEFAULT = "pyncm!"
 
 
 class Session(httpx.AsyncClient):
     """# Session
         实现网易云音乐登录态 / API 请求管理
 
-        - HTTP方面，`Session`的配置方法和 `httpx.Session` 完全一致，如配置 Headers:
+        - HTTP方面，`Session`的配置方法和 `httpx.AsyncClient` 完全一致，如配置 Headers:
 
-        GetCurrentSession().headers['X-Real-IP'] = '1.1.1.1'
+        Session().headers['X-Real-IP'] = '1.1.1.1'
 
         - 该 Session 其他参数也可被修改:
 
-        GetCurrentSession().force_http = True # 优先 HTTP
+        Session().force_http = True # 优先 HTTP
 
-        - Session 对象本身可作为 Context Manager 使用:
-
-
-    ```python
-    # 利用全局 Session 完成该 API Call
-    await LoginViaEmail(...)
-    session = CreateNewSession() # 建立新的 Session
-    async with session: # 进入该 Session, 在 `async with` 内的 API 将由该 Session 完成
-        await LoginViaCellPhone(...)
-    # 离开 Session. 此后 API 将继续由全局 Session 管理
-    ```
-    注：Session 各*线程*独立，各线程利用 `async with` 设置的 Session 不互相影响
-
-    获取其他具体信息请参考该文档注释
+        获取其他具体信息请参考该文档注释
     """
 
     HOST = "music.163.com"
@@ -106,13 +87,9 @@ class Session(httpx.AsyncClient):
     """优先使用 HTTP 作 API 请求协议"""
 
     async def __aenter__(self) -> httpx.AsyncClient:
-        SESSION_STACK.setdefault(get_running_loop(), list())
-        SESSION_STACK[get_running_loop()].append(self)
-        return await super().__aenter__()
-
-    async def __aexit__(self, *args) -> None:
-        SESSION_STACK[get_running_loop()].pop()
-        return await super().__aexit__(*args)
+        raise TypeError(
+            f"{self.__class__.__name__} does not support the context manager"
+        )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -258,28 +235,12 @@ class Session(httpx.AsyncClient):
         for k, v in dumped.items():
             self._session_info[k][1](self, v)
         return True
-
-
-# endregion
+    
+    # endregion
 
 
 class SessionManager:
     """PyNCM_Async Session 单例储存对象"""
-
-    def __init__(self) -> None:
-        self.session = Session()
-
-    def get(self):
-        if SESSION_STACK.get(get_running_loop(), None):
-            return SESSION_STACK[get_running_loop()][-1]
-        return self.session
-
-    def set(self, session):
-        if SESSION_STACK.get(get_running_loop(), None):
-            raise Exception(
-                "Current Session is in `with` block, which cannot be reassigned."
-            )
-        self.session = session
 
     # region Session serialization
     @staticmethod
@@ -329,26 +290,6 @@ class SessionManager:
 sessionManager = SessionManager()
 
 
-def GetCurrentSession() -> Session:
-    """获取当前正在被 PyNCM_Async 使用的 Session / 登录态"""
-    return sessionManager.get()
-
-
-def SetCurrentSession(session: Session):
-    """设置当前正在被 PyNCM_Async 使用的 Session / 登录态"""
-    sessionManager.set(session)
-
-
-def SetNewSession():
-    """设置新的被 PyNCM_Async 使用的 Session / 登录态"""
-    sessionManager.set(Session())
-
-
-def CreateNewSession() -> Session:
-    """创建新 Session 实例"""
-    return Session()
-
-
 def LoadSessionFromString(dump: str) -> Session:
     """从 `str` 加载 Session / 登录态"""
     session = SessionManager.parse(dump)
@@ -360,18 +301,20 @@ def DumpSessionAsString(session: Session) -> str:
     return SessionManager.stringify(session)
 
 
-def WriteLoginInfo(content: dict):
+def WriteLoginInfo(content: dict, session: Session):
     """写登录态入Session
 
     Args:
         content (dict): 解码后的登录态
+        session (Session)
 
     Raises:
         LoginFailedException: 登陆失败时发生
     """
-    sessionManager.session.login_info = {"tick": time(), "content": content}
-    if not sessionManager.session.login_info["content"]["code"] == 200:
-        sessionManager.session.login_info["success"] = False
-        raise Exception(sessionManager.session.login_info["content"])
-    sessionManager.session.login_info["success"] = True
-    sessionManager.session.csrf_token = sessionManager.session.cookies.get("__csrf")
+
+    session.login_info = {"tick": time(), "content": content}
+    if not session.login_info["content"]["code"] == 200:
+        session.login_info["success"] = False
+        raise Exception(session.login_info["content"])
+    session.login_info["success"] = True
+    session.csrf_token = session.cookies.get("__csrf")
